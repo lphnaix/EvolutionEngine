@@ -7,6 +7,10 @@ using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 using Engine.Gameplay.Quests;
+using Engine.Gameplay.Items;
+using Engine.Gameplay.Stats;
+using Engine.Gameplay.Status;
+using Engine.Gameplay.Skills;
 
 namespace SampleApp;
 
@@ -29,6 +33,8 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
     private ProjectileSystem? _projectiles;
     private CombatSystem? _combat;
     private Quest? _quest;
+    private readonly List<(Item item, Vector2 pos)> _worldItems = new();
+    private Skill? _powerShot;
     private Vector2 _camera;
     private const int TileSize = 32;
     private Vector2 _lastDir = new(1, 0);
@@ -60,6 +66,7 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
         _combat.EnemyKilled += OnEnemyKilled;
         SpawnEnemies(5);
         _quest = new Quest("quest_kill", "消灭5个敌人", 5);
+        _powerShot = new Skill("power_shot", cooldown: 2f, resource: SkillResource.Stamina, cost: 25f);
         base.Initialize();
     }
 
@@ -95,7 +102,7 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
             _lastDir = dir;
         }
 
-        var moveSpeed = _player.Stats.Get(Engine.Gameplay.Stats.StatType.MoveSpeed);
+        var moveSpeed = _player.Stats.Get(StatType.MoveSpeed);
         var dx = dir.X * moveSpeed * dt;
         var dy = dir.Y * moveSpeed * dt;
 
@@ -110,6 +117,26 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
         {
             Shoot(_player, _projectiles, _lastDir);
         }
+
+        if (kb.IsKeyDown(Keys.LeftShift) && _powerShot != null && _powerShot.TryCast(_player.Stamina, dt))
+        {
+            Shoot(_player, _projectiles, _lastDir, damageBonus: 20);
+        }
+
+        if (kb.IsKeyDown(Keys.Q))
+        {
+            UseSpeedPotion(_player);
+        }
+
+        if (kb.IsKeyDown(Keys.E))
+        {
+            TryPickup(_player);
+        }
+
+        _powerShot?.Update(dt);
+        _player.Stamina.Update(dt);
+        _player.Buffs.Update(dt);
+        _player.Recalculate();
 
         _projectiles.Update(dt);
         _combat.ResolveProjectiles(_projectiles.Projectiles, _enemies.Enemies as IList<Enemy>);
@@ -174,6 +201,13 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
             _spriteBatch.Draw(_tileTexture, rect, Color.Yellow);
         }
 
+        // world items
+        foreach (var wi in _worldItems)
+        {
+            var dest = new Rectangle((int)wi.pos.X, (int)wi.pos.Y, 16, 16);
+            _spriteBatch.Draw(_itemTexture, dest, Color.White);
+        }
+
         _spriteBatch.Draw(_playerTexture, new Vector2(_player.X * TileSize, _player.Y * TileSize), Color.White);
         DrawBar(_spriteBatch, new Vector2(_player.X * TileSize, _player.Y * TileSize - 10), _player.Health.Current / _player.Health.Max, Color.LimeGreen);
         DrawHud();
@@ -189,10 +223,61 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
         return ConfigLoader.Load<EngineSettings>(path);
     }
 
-    private void Shoot(Player player, ProjectileSystem system, Vector2 dir)
+    private void DropItem(float x, float y)
+    {
+        // 50% 概率掉落武器，50% 掉落速度药水
+        var roll = _rng.NextDouble();
+        Item item;
+        if (roll < 0.5)
+        {
+            item = new Item("weapon_basic", "基础武器", ItemType.Weapon, new Dictionary<StatType, float> { { StatType.Damage, 5 } });
+        }
+        else
+        {
+            item = new Item("potion_speed", "速度药水", ItemType.Consumable, new Dictionary<StatType, float> { { StatType.MoveSpeed, 2 } });
+        }
+
+        _worldItems.Add((item, new Vector2(x * TileSize, y * TileSize)));
+    }
+
+    private void TryPickup(Player player)
+    {
+        for (int i = 0; i < _worldItems.Count; i++)
+        {
+            var (item, pos) = _worldItems[i];
+            var dx = player.X * TileSize - pos.X;
+            var dy = player.Y * TileSize - pos.Y;
+            if (dx * dx + dy * dy < (TileSize * TileSize))
+            {
+                player.Inventory.Add(item);
+                _worldItems.RemoveAt(i);
+                AutoEquip(player, item);
+                break;
+            }
+        }
+    }
+
+    private void AutoEquip(Player player, Item item)
+    {
+        if (item.Type is ItemType.Weapon or ItemType.Armor)
+        {
+            player.Equipment.Equip(item);
+            player.Recalculate();
+        }
+    }
+
+    private void UseSpeedPotion(Player player)
+    {
+        var potion = player.Inventory.Items.FirstOrDefault(i => i.Id == "potion_speed");
+        if (potion == null) return;
+        player.Inventory.Remove(potion.Id);
+        player.Buffs.Add(new Buff(StatType.MoveSpeed, amount: 2, duration: 5));
+    }
+
+    private void Shoot(Player player, ProjectileSystem system, Vector2 dir, float damageBonus = 0)
     {
         var speed = 10f;
-        var damage = player.Stats.Get(Engine.Gameplay.Stats.StatType.Damage);
+        var damage = player.Stats.Get(StatType.Damage) + damageBonus;
         var proj = new Projectile(player.X, player.Y, dir.X * speed, dir.Y * speed, damage);
         system.Spawn(proj);
     }
@@ -212,6 +297,7 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
     {
         _quest?.OnKill();
         _gold += 5;
+        DropItem(enemy.X, enemy.Y);
     }
 
     private void DrawBar(SpriteBatch batch, Vector2 position, float pct, Color color)
@@ -244,6 +330,11 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
             };
             _spriteBatch.Draw(_tileTexture, new Rectangle(10, 28, 40, 4), color);
         }
+
+        // stamina bar
+        var staminaPct = _player.Stamina.Current / _player.Stamina.Max;
+        _spriteBatch.Draw(_tileTexture, new Rectangle(10, 36, 100, 4), Color.DarkSlateGray);
+        _spriteBatch.Draw(_tileTexture, new Rectangle(10, 36, (int)(100 * staminaPct), 4), Color.DeepSkyBlue);
     }
 
     private static Texture2D CreateSolidTexture(GraphicsDevice device, int width, int height, Color color)

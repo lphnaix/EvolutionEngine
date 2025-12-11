@@ -1,0 +1,14 @@
+[
+  {
+    "id": "weapon_basic",
+    "name": "基础武器",
+    "type": "Weapon",
+    "bonuses": { "Damage": 5 }
+  },
+  {
+    "id": "potion_speed",
+    "name": "速度药水",
+    "type": "Consumable",
+    "bonuses": { "MoveSpeed": 2 }
+  }
+]

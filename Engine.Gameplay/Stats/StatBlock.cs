@@ -9,6 +9,14 @@ public sealed class StatBlock
 
     public void SetBonus(StatType type, float value) => _bonusValues[type] = value;
 
+    public void AddBonus(StatType type, float value)
+    {
+        _bonusValues.TryGetValue(type, out var current);
+        _bonusValues[type] = current + value;
+    }
+
+    public void ClearBonuses() => _bonusValues.Clear();
+
     public float Get(StatType type)
     {
         _baseValues.TryGetValue(type, out var b);
