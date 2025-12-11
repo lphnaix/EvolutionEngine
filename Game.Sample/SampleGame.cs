@@ -38,6 +38,7 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
     private Quest? _quest;
     private readonly List<(Item item, Vector2 pos)> _worldItems = new();
     private Skill? _powerShot;
+    private Dictionary<string, Item> _items = new();
     private Camera? _camera;
     private TerrainRenderer? _terrainRenderer;
     private TerrainMesh? _terrainMesh;
@@ -63,6 +64,7 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
     protected override void Initialize()
     {
         _settings = LoadSettings();
+        _items = LoadItems();
         var terrain = new TerrainGenerator(_settings.WorldSeed).Generate(_settings.WorldWidth, _settings.WorldHeight);
         _sceneManager = new SceneManager(new Scene(terrain));
         _collision = new CollisionSystem(terrain);
@@ -200,8 +202,34 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
     private static EngineSettings LoadSettings()
     {
         var baseDir = AppContext.BaseDirectory;
-        var path = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "Data", "config.json"));
+        var path = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "Build", "Config", "engine_settings.json"));
         return ConfigLoader.Load<EngineSettings>(path);
+    }
+
+    private Dictionary<string, Item> LoadItems()
+    {
+        var baseDir = AppContext.BaseDirectory;
+        var path = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "Build", "Config", "items.json"));
+        var dto = ConfigLoader.Load<ItemsConfig>(path);
+        var dict = new Dictionary<string, Item>();
+        foreach (var it in dto.Items)
+        {
+            var bonuses = new Dictionary<StatType, float>();
+            if (it.Bonuses != null)
+            {
+                foreach (var kv in it.Bonuses)
+                {
+                    if (Enum.TryParse<StatType>(kv.Key, out var stat))
+                    {
+                        bonuses[stat] = kv.Value;
+                    }
+                }
+            }
+
+            var item = new Item(it.Id, it.Name, it.Type, bonuses);
+            dict[it.Id] = item;
+        }
+        return dict;
     }
 
     private void DropItem(float x, float y)
@@ -218,7 +246,10 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
             item = new Item("potion_speed", "速度药水", ItemType.Consumable, new Dictionary<StatType, float> { { StatType.MoveSpeed, 2 } });
         }
 
-        _worldItems.Add((item, new Vector2(x, y)));
+        if (_items.TryGetValue(item.Id, out var cfg))
+        {
+            _worldItems.Add((cfg, new Vector2(x, y)));
+        }
     }
 
     private void TryPickup(Player player)

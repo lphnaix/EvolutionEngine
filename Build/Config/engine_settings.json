@@ -1,0 +1,7 @@
+{
+  "PlayerSpeed": 5.0,
+  "WorldWidth": 32,
+  "WorldHeight": 32,
+  "WorldSeed": 1337,
+  "config_version": "0.1"
+}

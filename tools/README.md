@@ -9,6 +9,11 @@ Python 工具环境
    - cmd: `env\Scripts\activate.bat`
 4. 安装依赖：`pip install -r requirements.txt`（包含 pyyaml，用于读写 JSON/YAML）
 
+构建配置
+- 运行：`python build_configs.py`
+- 输入：`Data/config.json|yaml`, `Data/items.json|yaml`
+- 输出：`Build/Config/engine_settings.json`, `Build/Config/items.json`（附 config_version 字段）
+
 结构
 - env/            # 虚拟环境（不提交，可本地创建）
 - common/         # 数据模型、SQLite 助手
