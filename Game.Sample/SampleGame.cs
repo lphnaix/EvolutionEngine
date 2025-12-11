@@ -11,6 +11,9 @@ using Engine.Gameplay.Items;
 using Engine.Gameplay.Stats;
 using Engine.Gameplay.Status;
 using Engine.Gameplay.Skills;
+using Engine.Rendering;
+using Engine.Rendering.Sprites;
+using Engine.Rendering.Terrain;
 
 namespace SampleApp;
 
@@ -35,7 +38,11 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
     private Quest? _quest;
     private readonly List<(Item item, Vector2 pos)> _worldItems = new();
     private Skill? _powerShot;
-    private Vector2 _camera;
+    private Camera? _camera;
+    private TerrainRenderer? _terrainRenderer;
+    private TerrainMesh? _terrainMesh;
+    private BillboardRenderer? _billboardRenderer;
+    private const float PixelsPerMeter = 32f;
     private const int TileSize = 32;
     private Vector2 _lastDir = new(1, 0);
     private readonly Random _rng = new(42);
@@ -67,16 +74,24 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
         SpawnEnemies(5);
         _quest = new Quest("quest_kill", "消灭5个敌人", 5);
         _powerShot = new Skill("power_shot", cooldown: 2f, resource: SkillResource.Stamina, cost: 25f);
+        _camera = new Camera(viewWidth: 40f, viewHeight: 22f);
         base.Initialize();
     }
 
     protected override void LoadContent()
     {
         _spriteBatch = new SpriteBatch(GraphicsDevice);
-        _playerTexture = CreateSolidTexture(GraphicsDevice, 32, 32, Color.OrangeRed);
+        _playerTexture = CreateSolidTexture(GraphicsDevice, 64, 96, Color.OrangeRed);
         _tileTexture = CreateSolidTexture(GraphicsDevice, 1, 1, Color.White);
-        _enemyTexture = CreateSolidTexture(GraphicsDevice, 28, 28, Color.MediumPurple);
-        _itemTexture = CreateSolidTexture(GraphicsDevice, 20, 20, Color.Gold);
+        _enemyTexture = CreateSolidTexture(GraphicsDevice, 64, 96, Color.MediumPurple);
+        _itemTexture = CreateSolidTexture(GraphicsDevice, 32, 32, Color.Gold);
+        _terrainRenderer = new TerrainRenderer(GraphicsDevice);
+        _billboardRenderer = new BillboardRenderer(GraphicsDevice);
+        if (_sceneManager != null)
+        {
+            _terrainMesh = TerrainMeshBuilder.Build(_sceneManager.Current.Terrain);
+            _terrainRenderer.SetMesh(_terrainMesh);
+        }
     }
 
     protected override void Update(GameTime gameTime)
@@ -150,7 +165,8 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
             _gold += 50;
         }
 
-        _camera = new Vector2(_player.X * TileSize, _player.Y * TileSize);
+        var focus = new Microsoft.Xna.Framework.Vector3(_player.X, _player.Y, _sceneManager.Current.Terrain.GetHeightWorld(_player.X, _player.Y));
+        _camera?.Follow(focus, distanceBack: 15f, height: 10f, tiltRadians: -0.35f);
 
         base.Update(gameTime);
     }
@@ -158,60 +174,25 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
     protected override void Draw(GameTime gameTime)
     {
         GraphicsDevice.Clear(Color.CornflowerBlue);
-        if (_spriteBatch is null || _playerTexture is null || _tileTexture is null || _player is null || _sceneManager is null || _enemyTexture is null || _projectiles is null || _itemTexture is null) return;
+        if (_player is null || _sceneManager is null || _camera is null || _terrainRenderer is null || _billboardRenderer is null) return;
 
-        var viewport = GraphicsDevice.Viewport;
-        var transform = Matrix.CreateTranslation(
-            -_camera.X + viewport.Width / 2f - _playerTexture.Width / 2f,
-            -_camera.Y + viewport.Height / 2f - _playerTexture.Height / 2f,
-            0f);
+        GraphicsDevice.DepthStencilState = DepthStencilState.Default;
+        GraphicsDevice.RasterizerState = RasterizerState.CullNone;
 
-        _spriteBatch.Begin(transformMatrix: transform, samplerState: SamplerState.PointClamp);
+        // 1) Terrain mesh
+        _terrainRenderer.Draw(_camera, Matrix.Identity);
 
-        // draw terrain tiles
-        var terrain = _sceneManager.Current.Terrain;
-        for (var x = 0; x < terrain.Width; x++)
+        // 2) Billboards
+        var sprites = BuildBillboards();
+        _billboardRenderer.Draw(_camera, sprites);
+
+        // 3) HUD
+        if (_spriteBatch != null && _tileTexture != null)
         {
-            for (var y = 0; y < terrain.Height; y++)
-            {
-                var tile = terrain.GetTile(x, y);
-                var color = tile.Type switch
-                {
-                    TileType.Blocked => Color.DarkSlateGray,
-                    TileType.Water => Color.SteelBlue,
-                    _ => Color.Lerp(Color.ForestGreen, Color.LightGreen, (tile.Height + 1f) * 0.5f)
-                };
-                var dest = new Rectangle(x * TileSize, y * TileSize, TileSize, TileSize);
-                _spriteBatch.Draw(_tileTexture, dest, color);
-            }
+            _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.PointClamp, DepthStencilState.None);
+            DrawHud();
+            _spriteBatch.End();
         }
-
-        // draw enemies
-        foreach (var e in _enemies!.Enemies)
-        {
-            var pos = new Vector2(e.X * TileSize, e.Y * TileSize);
-            _spriteBatch.Draw(_enemyTexture, pos, Color.White);
-            DrawBar(_spriteBatch, pos + new Vector2(0, -8), e.Health.Current / e.Health.Max, Color.Red);
-        }
-
-        // draw projectiles
-        foreach (var p in _projectiles.Projectiles)
-        {
-            var rect = new Rectangle((int)(p.X * TileSize), (int)(p.Y * TileSize), 8, 8);
-            _spriteBatch.Draw(_tileTexture, rect, Color.Yellow);
-        }
-
-        // world items
-        foreach (var wi in _worldItems)
-        {
-            var dest = new Rectangle((int)wi.pos.X, (int)wi.pos.Y, 16, 16);
-            _spriteBatch.Draw(_itemTexture, dest, Color.White);
-        }
-
-        _spriteBatch.Draw(_playerTexture, new Vector2(_player.X * TileSize, _player.Y * TileSize), Color.White);
-        DrawBar(_spriteBatch, new Vector2(_player.X * TileSize, _player.Y * TileSize - 10), _player.Health.Current / _player.Health.Max, Color.LimeGreen);
-        DrawHud();
-        _spriteBatch.End();
 
         base.Draw(gameTime);
     }
@@ -237,7 +218,7 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
             item = new Item("potion_speed", "速度药水", ItemType.Consumable, new Dictionary<StatType, float> { { StatType.MoveSpeed, 2 } });
         }
 
-        _worldItems.Add((item, new Vector2(x * TileSize, y * TileSize)));
+        _worldItems.Add((item, new Vector2(x, y)));
     }
 
     private void TryPickup(Player player)
@@ -245,9 +226,9 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
         for (int i = 0; i < _worldItems.Count; i++)
         {
             var (item, pos) = _worldItems[i];
-            var dx = player.X * TileSize - pos.X;
-            var dy = player.Y * TileSize - pos.Y;
-            if (dx * dx + dy * dy < (TileSize * TileSize))
+            var dx = player.X - pos.X;
+            var dy = player.Y - pos.Y;
+            if (dx * dx + dy * dy < 1f)
             {
                 player.Inventory.Add(item);
                 _worldItems.RemoveAt(i);
@@ -307,6 +288,64 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
         var front = new Rectangle((int)position.X, (int)position.Y, (int)(32 * pct), 4);
         batch.Draw(_tileTexture!, back, Color.Black * 0.5f);
         batch.Draw(_tileTexture!, front, color);
+    }
+
+    private List<BillboardSprite> BuildBillboards()
+    {
+        var list = new List<BillboardSprite>();
+        var terrain = _sceneManager!.Current.Terrain;
+
+        float spriteWorldHeight = _playerTexture is null ? 1.6f : _playerTexture.Height / PixelsPerMeter;
+        float spriteWorldWidth = _playerTexture is null ? 1.0f : _playerTexture.Width / PixelsPerMeter;
+
+        // player
+        if (_playerTexture != null && _player != null)
+        {
+            var z = terrain.GetHeightWorld(_player.X, _player.Y);
+            var pos = new Vector3(_player.X, _player.Y, z);
+            list.Add(new BillboardSprite(_playerTexture, null, pos, spriteWorldWidth, spriteWorldHeight, Color.White));
+        }
+
+        // enemies
+        if (_enemyTexture != null && _enemies != null)
+        {
+            var h = _enemyTexture.Height / PixelsPerMeter;
+            var w = _enemyTexture.Width / PixelsPerMeter;
+            foreach (var e in _enemies.Enemies)
+            {
+                var z = terrain.GetHeightWorld(e.X, e.Y);
+                var pos = new Vector3(e.X, e.Y, z);
+                list.Add(new BillboardSprite(_enemyTexture, null, pos, w, h, Color.White));
+            }
+        }
+
+        // items
+        if (_itemTexture != null)
+        {
+            var h = _itemTexture.Height / PixelsPerMeter;
+            var w = _itemTexture.Width / PixelsPerMeter;
+            foreach (var wi in _worldItems)
+            {
+                var z = terrain.GetHeightWorld(wi.pos.X, wi.pos.Y);
+                var pos = new Vector3(wi.pos.X, wi.pos.Y, z);
+                list.Add(new BillboardSprite(_itemTexture, null, pos, w, h, Color.White));
+            }
+        }
+
+        // projectiles
+        if (_tileTexture != null && _projectiles != null)
+        {
+            var h = 0.2f;
+            var w = 0.2f;
+            foreach (var p in _projectiles.Projectiles)
+            {
+                var z = terrain.GetHeightWorld(p.X, p.Y);
+                var pos = new Vector3(p.X, p.Y, z + 0.1f);
+                list.Add(new BillboardSprite(_tileTexture, null, pos, w, h, Color.Yellow));
+            }
+        }
+
+        return list;
     }
 
     private void DrawHud()

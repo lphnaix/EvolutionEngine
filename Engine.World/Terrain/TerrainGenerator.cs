@@ -15,10 +15,10 @@ public sealed class TerrainGenerator
         _threshold = threshold;
     }
 
-    public TerrainMap Generate(int width, int height)
+    public TerrainMap Generate(int width, int height, float cellSize = 1f)
     {
         var noise = new PerlinNoise(_seed);
-        var map = new TerrainMap(width, height);
+        var map = new TerrainMap(width, height, cellSize);
 
         for (var x = 0; x < width; x++)
         {
