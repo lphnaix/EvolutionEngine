@@ -6,11 +6,12 @@ using Engine.World.Terrain;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
+using Engine.Gameplay.Quests;
 
 namespace SampleApp;
 
 /// <summary>
-/// MonoGame-based sample satisfying阶段1：窗口/清屏、占位贴图、键鼠移动、相机跟随。
+/// MonoGame-based sample：窗口/清屏、占位贴图、键鼠移动、相机跟随，基础战斗、拾取、简单任务/奖励。
 /// </summary>
 public sealed class SampleGame : Microsoft.Xna.Framework.Game
 {
@@ -18,12 +19,21 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
     private SpriteBatch? _spriteBatch;
     private Texture2D? _playerTexture;
     private Texture2D? _tileTexture;
+    private Texture2D? _enemyTexture;
+    private Texture2D? _itemTexture;
     private Player? _player;
     private EngineSettings? _settings;
     private SceneManager? _sceneManager;
     private CollisionSystem? _collision;
+    private EnemySystem? _enemies;
+    private ProjectileSystem? _projectiles;
+    private CombatSystem? _combat;
+    private Quest? _quest;
     private Vector2 _camera;
     private const int TileSize = 32;
+    private Vector2 _lastDir = new(1, 0);
+    private readonly Random _rng = new(42);
+    private int _gold;
 
     public SampleGame()
     {
@@ -44,6 +54,12 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
         _sceneManager = new SceneManager(new Scene(terrain));
         _collision = new CollisionSystem(terrain);
         _player = new Player(_settings.WorldWidth / 2f, _settings.WorldHeight / 2f, _settings.PlayerSpeed);
+        _enemies = new EnemySystem();
+        _projectiles = new ProjectileSystem();
+        _combat = new CombatSystem();
+        _combat.EnemyKilled += OnEnemyKilled;
+        SpawnEnemies(5);
+        _quest = new Quest("quest_kill", "消灭5个敌人", 5);
         base.Initialize();
     }
 
@@ -52,11 +68,13 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
         _spriteBatch = new SpriteBatch(GraphicsDevice);
         _playerTexture = CreateSolidTexture(GraphicsDevice, 32, 32, Color.OrangeRed);
         _tileTexture = CreateSolidTexture(GraphicsDevice, 1, 1, Color.White);
+        _enemyTexture = CreateSolidTexture(GraphicsDevice, 28, 28, Color.MediumPurple);
+        _itemTexture = CreateSolidTexture(GraphicsDevice, 20, 20, Color.Gold);
     }
 
     protected override void Update(GameTime gameTime)
     {
-        if (_player is null || _settings is null || _sceneManager is null || _collision is null) return;
+        if (_player is null || _settings is null || _sceneManager is null || _collision is null || _enemies is null || _projectiles is null || _combat is null) return;
 
         var kb = Keyboard.GetState();
         if (kb.IsKeyDown(Keys.Escape))
@@ -74,16 +92,35 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
         if (dir.LengthSquared() > 0)
         {
             dir = Vector2.Normalize(dir);
+            _lastDir = dir;
         }
 
-        var dx = dir.X * _player.Speed * dt;
-        var dy = dir.Y * _player.Speed * dt;
+        var moveSpeed = _player.Stats.Get(Engine.Gameplay.Stats.StatType.MoveSpeed);
+        var dx = dir.X * moveSpeed * dt;
+        var dy = dir.Y * moveSpeed * dt;
 
         var targetX = _player.X + dx;
         var targetY = _player.Y + dy;
         if (_collision.CanMoveTo(targetX, targetY))
         {
             _player.Move(dx, dy);
+        }
+
+        if (kb.IsKeyDown(Keys.Space))
+        {
+            Shoot(_player, _projectiles, _lastDir);
+        }
+
+        _projectiles.Update(dt);
+        _combat.ResolveProjectiles(_projectiles.Projectiles, _enemies.Enemies as IList<Enemy>);
+        _enemies.Update(dt, _player.X, _player.Y);
+
+        // simple item pickup: drop gold on kills stored via _gold
+        // quest turn-in when completed and player presses T
+        if (_quest != null && _quest.Status == QuestStatus.Completed && kb.IsKeyDown(Keys.T))
+        {
+            _quest.TurnIn();
+            _gold += 50;
         }
 
         _camera = new Vector2(_player.X * TileSize, _player.Y * TileSize);
@@ -94,7 +131,7 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
     protected override void Draw(GameTime gameTime)
     {
         GraphicsDevice.Clear(Color.CornflowerBlue);
-        if (_spriteBatch is null || _playerTexture is null || _tileTexture is null || _player is null || _sceneManager is null) return;
+        if (_spriteBatch is null || _playerTexture is null || _tileTexture is null || _player is null || _sceneManager is null || _enemyTexture is null || _projectiles is null || _itemTexture is null) return;
 
         var viewport = GraphicsDevice.Viewport;
         var transform = Matrix.CreateTranslation(
@@ -122,7 +159,24 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
             }
         }
 
+        // draw enemies
+        foreach (var e in _enemies!.Enemies)
+        {
+            var pos = new Vector2(e.X * TileSize, e.Y * TileSize);
+            _spriteBatch.Draw(_enemyTexture, pos, Color.White);
+            DrawBar(_spriteBatch, pos + new Vector2(0, -8), e.Health.Current / e.Health.Max, Color.Red);
+        }
+
+        // draw projectiles
+        foreach (var p in _projectiles.Projectiles)
+        {
+            var rect = new Rectangle((int)(p.X * TileSize), (int)(p.Y * TileSize), 8, 8);
+            _spriteBatch.Draw(_tileTexture, rect, Color.Yellow);
+        }
+
         _spriteBatch.Draw(_playerTexture, new Vector2(_player.X * TileSize, _player.Y * TileSize), Color.White);
+        DrawBar(_spriteBatch, new Vector2(_player.X * TileSize, _player.Y * TileSize - 10), _player.Health.Current / _player.Health.Max, Color.LimeGreen);
+        DrawHud();
         _spriteBatch.End();
 
         base.Draw(gameTime);
@@ -133,6 +187,63 @@ public sealed class SampleGame : Microsoft.Xna.Framework.Game
         var baseDir = AppContext.BaseDirectory;
         var path = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "Data", "config.json"));
         return ConfigLoader.Load<EngineSettings>(path);
+    }
+
+    private void Shoot(Player player, ProjectileSystem system, Vector2 dir)
+    {
+        var speed = 10f;
+        var damage = player.Stats.Get(Engine.Gameplay.Stats.StatType.Damage);
+        var proj = new Projectile(player.X, player.Y, dir.X * speed, dir.Y * speed, damage);
+        system.Spawn(proj);
+    }
+
+    private void SpawnEnemies(int count)
+    {
+        if (_enemies == null || _settings == null) return;
+        for (int i = 0; i < count; i++)
+        {
+            var ex = (float)_rng.NextDouble() * _settings.WorldWidth;
+            var ey = (float)_rng.NextDouble() * _settings.WorldHeight;
+            _enemies.Spawn(new Enemy(ex, ey, speed: 1.5f, maxHp: 20));
+        }
+    }
+
+    private void OnEnemyKilled(Enemy enemy)
+    {
+        _quest?.OnKill();
+        _gold += 5;
+    }
+
+    private void DrawBar(SpriteBatch batch, Vector2 position, float pct, Color color)
+    {
+        pct = Math.Clamp(pct, 0, 1);
+        var back = new Rectangle((int)position.X, (int)position.Y, 32, 4);
+        var front = new Rectangle((int)position.X, (int)position.Y, (int)(32 * pct), 4);
+        batch.Draw(_tileTexture!, back, Color.Black * 0.5f);
+        batch.Draw(_tileTexture!, front, color);
+    }
+
+    private void DrawHud()
+    {
+        if (_spriteBatch == null || _tileTexture == null || _player == null) return;
+        var hpPct = _player.Health.Current / _player.Health.Max;
+        DrawBar(_spriteBatch, new Vector2(10, 10), hpPct, Color.LimeGreen);
+
+        // gold / quest indicators as simple colored dots
+        var goldWidth = Math.Min(100, _gold);
+        _spriteBatch.Draw(_tileTexture, new Rectangle(10, 20, goldWidth, 4), Color.Gold);
+
+        if (_quest != null)
+        {
+            var color = _quest.Status switch
+            {
+                QuestStatus.InProgress => Color.Orange,
+                QuestStatus.Completed => Color.Cyan,
+                QuestStatus.TurnedIn => Color.Gray,
+                _ => Color.Red
+            };
+            _spriteBatch.Draw(_tileTexture, new Rectangle(10, 28, 40, 4), color);
+        }
     }
 
     private static Texture2D CreateSolidTexture(GraphicsDevice device, int width, int height, Color color)

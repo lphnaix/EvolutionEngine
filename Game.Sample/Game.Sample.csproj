@@ -12,6 +12,7 @@
     <ProjectReference Include="..\Engine.Rendering\Engine.Rendering.csproj" />
     <ProjectReference Include="..\Engine.World\Engine.World.csproj" />
     <ProjectReference Include="..\Engine.Data\Engine.Data.csproj" />
+    <ProjectReference Include="..\Engine.Gameplay\Engine.Gameplay.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="MonoGame.Framework.DesktopGL" Version="3.8.1.303" />
